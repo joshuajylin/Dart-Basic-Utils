@@ -57,7 +57,7 @@ class Pkcs12Utils {
     String? friendlyName,
     Uint8List? localKeyId,
   }) {
-    Uint8List? pwFormatted;
+    Uint8List? pwFormatted = Uint8List.fromList([0]);
     if (password != null) {
       pwFormatted =
           formatPkcs12Password(Uint8List.fromList(password.codeUnits));
@@ -599,7 +599,7 @@ class Pkcs12Utils {
     Uint8List pkcs12, {
     String? password,
   }) {
-    Uint8List? pwFormatted;
+    Uint8List? pwFormatted = Uint8List.fromList([0]);
     if (password != null) {
       pwFormatted =
           formatPkcs12Password(Uint8List.fromList(password.codeUnits));
