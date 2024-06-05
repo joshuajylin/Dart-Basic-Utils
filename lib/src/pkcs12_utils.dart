@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:developer';
 import 'dart:typed_data';
 
 import 'package:basic_utils/basic_utils.dart';
@@ -235,17 +237,26 @@ class Pkcs12Utils {
   ///
   /// Formats the given [password] according to RFC 7292 Appendix B.1
   ///
-  static Uint8List formatPkcs12Password(Uint8List password) {
+  static Uint8List formatPkcs12Password(Uint8List password, {bool isUtf8 = false}) {
     if (password.isNotEmpty) {
-      // +1 for extra 2 pad bytes.
-      var bytes = Uint8List((password.length + 1) * 2);
+      if (isUtf8) {
+        var bytes = Uint8List(password.length + 1);
+        for (var i = 0; i != password.length; i++) {
+          bytes[i] = password[i];
+        }
+        bytes[password.length] = 0;
+        return bytes;
+      } else {
+        // +1 for extra 2 pad bytes.
+        var bytes = Uint8List((password.length + 1) * 2);
 
-      for (var i = 0; i != password.length; i++) {
-        bytes[i * 2] = (password[i] >>> 8);
-        bytes[i * 2 + 1] = password[i];
+        for (var i = 0; i != password.length; i++) {
+          bytes[i * 2] = (password[i] >>> 8);
+          bytes[i * 2 + 1] = password[i];
+        }
+
+        return bytes;
       }
-
-      return bytes;
     } else {
       return Uint8List(0);
     }
@@ -474,7 +485,28 @@ class Pkcs12Utils {
       Uint8List pwFormatted,
       Uint8List salt,
       int macIter,
-      String digetAlgorithm) {
+      String digetAlgorithm,
+      {String? encryptionScheme = null, int? keyLen = null, Uint8List? iv = null}) {
+    if (algorithm == 'PBES2') {
+      final derivator = KeyDerivator('$digetAlgorithm/PBKDF2');
+      derivator.init(Pbkdf2Parameters(salt, macIter, keyLen!));
+      Uint8List dk = derivator.process(pwFormatted);
+      final cipher = BlockCipher(encryptionScheme!);
+      switch (cipher.algorithmName) {
+        case 'AES/CBC':
+          cipher.init(false, ParametersWithIV(KeyParameter(dk), iv!));
+          break;
+        default:
+          throw ArgumentError('unsupported algorithm $encryptionScheme');
+      };
+      final paddedPlaintext = Uint8List(toDecrypt.length);
+      var offset = 0;
+      while (offset < toDecrypt.length) {
+        offset += cipher.processBlock(toDecrypt, offset, paddedPlaintext, offset);
+      }
+      return CryptoUtils.removePKCS7Padding(paddedPlaintext);
+    }
+    
     var pkcs12ParameterGenerator =
         PKCS12ParametersGenerator(Digest(digetAlgorithm));
     pkcs12ParameterGenerator.init(pwFormatted, salt, macIter);
@@ -536,6 +568,8 @@ class Pkcs12Utils {
         return ASN1AlgorithmIdentifier.fromIdentifier('2.16.840.1.101.3.4.2.2');
       case 'SHA-512':
         return ASN1AlgorithmIdentifier.fromIdentifier('2.16.840.1.101.3.4.2.3');
+      case 'SHA-256/HMAC':
+        return ASN1AlgorithmIdentifier.fromIdentifier('1.2.840.113549.2.9');
       default:
         return ASN1AlgorithmIdentifier.fromIdentifier('1.3.14.3.2.26');
     }
@@ -585,8 +619,39 @@ class Pkcs12Utils {
             HexUtils.decode("06 0A 2A 86 48 86 F7 0D 01 0C 01 03"),
           ),
         );
+      case 'PBKDF2':
+        // 1.2.840.113549.1.5.12
+        return ASN1ObjectIdentifier.fromBytes(
+          Uint8List.fromList(
+            HexUtils.decode("06 09 2A 86 48 86 F7 0D 01 05 0C"),
+          ),
+        );
+      case 'PBES2':
+        // 1.2.840.113549.1.5.13
+        return ASN1ObjectIdentifier.fromBytes(
+          Uint8List.fromList(
+            HexUtils.decode("06 09 2A 86 48 86 F7 0D 01 05 0D"),
+          ),
+        );
       default:
-        throw ArgumentError('unsupported algorithm');
+        throw ArgumentError('unsupported algorithm $keyPbe');
+    }
+  }
+
+  static void _dumpASN1Object(ASN1Object? obj) {
+    if (obj is ASN1ObjectIdentifier) {
+      print('ASN1ObjectIdentifier: ${obj.objectIdentifierAsString}');
+    } else if (obj is ASN1Integer) {
+      print('ASN1Integer: ${obj.integer}');
+    } else if (obj is ASN1OctetString) {
+      print('ASN1OctetString: ${String.fromCharCodes(obj.valueBytes?.toList() ?? [])}');
+    } else if (obj is ASN1Sequence) {
+      print('obj is ASN1Sequence, ${obj.elements?.length ?? 0} elements');
+      for (final element in obj.elements ?? []) {
+        _dumpASN1Object(element);
+      }
+    } else {
+      print('obj.runtimeType: ${obj.runtimeType}');
     }
   }
 
@@ -596,10 +661,11 @@ class Pkcs12Utils {
   static List<String> parsePkcs12(
     Uint8List pkcs12, {
     String? password,
+    bool isUtf8 = false,
   }) {
     Uint8List? pwFormatted;
     if (password != null) {
-      pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits));
+      pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits), isUtf8: isUtf8);
     }
 
     var pems = <String>[];
@@ -631,13 +697,33 @@ class Pkcs12Utils {
                 encryptedContentInfo.contentEncryptionAlgorithm;
             var encryptionAlgorithm = _algorithmFromOi(
                 contentEncryptionAlgorithm.algorithm.objectIdentifierAsString!);
-            // GET SALT AND MACITER AND DIGEST ALGORITHM
-            Uint8List salt = _getSaltFromAlgorithmParameters(
-                contentEncryptionAlgorithm.parameters);
-            int macIter = _getMacIterFromAlgorithmParameters(
-                contentEncryptionAlgorithm.parameters);
-            var digestAlgorithm =
-                _getDigestAlgorithmFromEncryptionAlgorithm(encryptionAlgorithm);
+
+            Uint8List salt;
+            int macIter;
+            String digestAlgorithm;
+            String? encryptionScheme = null;
+            int? keyLen = null;
+            Uint8List? iv = null;
+            if (encryptionAlgorithm == 'PBES2') {
+              //_dumpASN1Object(contentEncryptionAlgorithm.parameters);
+              final pbkdf2Params = ((contentEncryptionAlgorithm.parameters as ASN1Sequence).elements![0] as ASN1Sequence).elements![1];
+              salt = _getSaltFromAlgorithmParameters(pbkdf2Params);
+              macIter = _getMacIterFromAlgorithmParameters(pbkdf2Params);
+              digestAlgorithm = _getDigestAlgorithmFromPBKDF2Parameters(pbkdf2Params);
+              encryptionScheme = _getEncryptionSchemeFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
+              keyLen = _getEncryptionSchemeKeyLengthFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
+              if (encryptionScheme == 'AES/CBC') {
+                iv = _getAesCbcIvFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
+              }
+            } else {
+              // GET SALT AND MACITER AND DIGEST ALGORITHM
+              salt = _getSaltFromAlgorithmParameters(
+                  contentEncryptionAlgorithm.parameters);
+              macIter = _getMacIterFromAlgorithmParameters(
+                  contentEncryptionAlgorithm.parameters);
+              digestAlgorithm =
+              _getDigestAlgorithmFromEncryptionAlgorithm(encryptionAlgorithm);
+            }
             // DECRYPT
             var decryptedContent = _decrypt(
               encryptedContentInfo.encryptedContent!,
@@ -646,6 +732,9 @@ class Pkcs12Utils {
               salt,
               macIter,
               digestAlgorithm,
+              encryptionScheme: encryptionScheme,
+              keyLen: keyLen,
+              iv: iv,
             );
             var contentType = encryptedContentInfo.contentType;
             switch (contentType.objectIdentifierAsString) {
@@ -659,10 +748,8 @@ class Pkcs12Utils {
                 });
                 break;
             }
-            print('');
             break;
           case '1.2.840.113549.1.7.1': // data (PKCS #7)
-
             var safeContents = ASN1SafeContents.fromSequence(
               ASN1Sequence.fromBytes(contentInfo.content!.valueBytes!),
             );
@@ -691,14 +778,34 @@ class Pkcs12Utils {
                   var encryptionAlgorithm = _algorithmFromOi(
                       contentEncryptionAlgorithm
                           .algorithm.objectIdentifierAsString!);
-                  // GET SALT AND MACITER AND DIGEST ALGORITHM
-                  Uint8List salt = _getSaltFromAlgorithmParameters(
-                      contentEncryptionAlgorithm.parameters);
-                  int macIter = _getMacIterFromAlgorithmParameters(
-                      contentEncryptionAlgorithm.parameters);
-                  var digestAlgorithm =
-                      _getDigestAlgorithmFromEncryptionAlgorithm(
-                          encryptionAlgorithm);
+
+                  Uint8List salt;
+                  int macIter;
+                  String digestAlgorithm;
+                  String? encryptionScheme = null;
+                  int? keyLen = null;
+                  Uint8List? iv = null;
+                  if (encryptionAlgorithm == 'PBES2') {
+                    //_dumpASN1Object(contentEncryptionAlgorithm.parameters);
+                    final pbkdf2Params = ((contentEncryptionAlgorithm.parameters as ASN1Sequence).elements![0] as ASN1Sequence).elements![1];
+                    salt = _getSaltFromAlgorithmParameters(pbkdf2Params);
+                    macIter = _getMacIterFromAlgorithmParameters(pbkdf2Params);
+                    digestAlgorithm = _getDigestAlgorithmFromPBKDF2Parameters(pbkdf2Params);
+                    encryptionScheme = _getEncryptionSchemeFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
+                    keyLen = _getEncryptionSchemeKeyLengthFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
+                    if (encryptionScheme == 'AES/CBC') {
+                      iv = _getAesCbcIvFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
+                    }
+                  } else {
+                    // GET SALT AND MACITER AND DIGEST ALGORITHM
+                    salt = _getSaltFromAlgorithmParameters(
+                        contentEncryptionAlgorithm.parameters);
+                    macIter = _getMacIterFromAlgorithmParameters(
+                        contentEncryptionAlgorithm.parameters);
+                    digestAlgorithm =
+                    _getDigestAlgorithmFromEncryptionAlgorithm(
+                        encryptionAlgorithm);
+                  }
                   // DECRYPT
                   var decryptedContent = _decrypt(
                     bagValueSeq.elements!.elementAt(1).valueBytes!,
@@ -707,6 +814,9 @@ class Pkcs12Utils {
                     salt,
                     macIter,
                     digestAlgorithm,
+                    encryptionScheme: encryptionScheme,
+                    keyLen: keyLen,
+                    iv: iv,
                   );
                   var s = ASN1Sequence.fromBytes(decryptedContent);
                   pems.insert(
@@ -757,8 +867,12 @@ class Pkcs12Utils {
         return "PBE-SHA1-2DES";
       case '1.2.840.113549.1.12.1.3':
         return "PBE-SHA1-3DES";
+      case '1.2.840.113549.1.5.12':
+        return 'PBKDF2';
+      case '1.2.840.113549.1.5.13':
+        return 'PBES2';
       default:
-        throw ArgumentError('unsupported algorithm');
+        throw ArgumentError('unsupported algorithm $keyPbe');
     }
   }
 
@@ -772,7 +886,7 @@ class Pkcs12Utils {
       case 'PBE-SHA1-3DES':
         return "SHA-1";
       default:
-        throw ArgumentError('unsupported algorithm');
+        throw ArgumentError('unsupported algorithm $keyPbe');
     }
   }
 
@@ -792,6 +906,75 @@ class Pkcs12Utils {
       return asn1Int.integer!.toInt();
     }
     return 1;
+  }
+
+  static String _getDigestAlgorithmFromPBKDF2Parameters(ASN1Object? parameters) {
+    var algorithm = 'unknown';
+    var seq = parameters as ASN1Sequence;
+    if (seq.elements != null && seq.elements!.isNotEmpty) {
+      seq = seq.elements!.elementAt(2) as ASN1Sequence;
+      if (seq.elements != null && seq.elements!.isNotEmpty) {
+        final ans1OID = seq.elements!.elementAt(0) as ASN1ObjectIdentifier;
+        switch (ans1OID.objectIdentifierAsString) {
+          case '1.2.840.113549.2.9': // hmacWithSHA256
+            algorithm = 'SHA-256/HMAC';
+            return algorithm;
+          default:
+            algorithm = ans1OID.objectIdentifierAsString ?? 'unknown';
+        }
+      }
+    }
+    throw ArgumentError('unsupported algorithm $algorithm');
+  }
+
+  static String _getEncryptionSchemeFromPBES2Parameters(ASN1Object? parameters) {
+    var algorithm = 'unknown';
+    var seq = parameters as ASN1Sequence;
+    if (seq.elements != null && seq.elements!.isNotEmpty) {
+      seq = seq.elements!.elementAt(1) as ASN1Sequence;
+      if (seq.elements != null && seq.elements!.isNotEmpty) {
+        final ans1OID = seq.elements!.elementAt(0) as ASN1ObjectIdentifier;
+        switch (ans1OID.objectIdentifierAsString) {
+          case '2.16.840.1.101.3.4.1.42': // aes256-CBC
+            algorithm = 'AES/CBC';
+            return algorithm;
+          default:
+            algorithm = ans1OID.objectIdentifierAsString ?? 'unknown';
+        }
+      }
+    }
+    throw ArgumentError('unsupported algorithm $algorithm');
+  }
+
+  static int _getEncryptionSchemeKeyLengthFromPBES2Parameters(ASN1Object? parameters) {
+    var algorithm = 'unknown';
+    var seq = parameters as ASN1Sequence;
+    if (seq.elements != null && seq.elements!.isNotEmpty) {
+      seq = seq.elements!.elementAt(1) as ASN1Sequence;
+      if (seq.elements != null && seq.elements!.isNotEmpty) {
+        final ans1OID = seq.elements!.elementAt(0) as ASN1ObjectIdentifier;
+        switch (ans1OID.objectIdentifierAsString) {
+          case '2.16.840.1.101.3.4.1.42': // aes256-CBC
+            algorithm = ans1OID.objectIdentifierAsString!;
+            return 32;
+          default:
+            algorithm = ans1OID.objectIdentifierAsString ?? 'unknown';
+        }
+      }
+    }
+    throw ArgumentError('unsupported algorithm $algorithm');
+  }
+
+  static Uint8List _getAesCbcIvFromPBES2Parameters(ASN1Object? parameters) {
+    var seq = parameters as ASN1Sequence;
+    if (seq.elements != null && seq.elements!.isNotEmpty) {
+      seq = seq.elements!.elementAt(1) as ASN1Sequence;
+      if (seq.elements != null && seq.elements!.isNotEmpty) {
+        final asn1Octet = seq.elements!.elementAt(1) as ASN1OctetString;
+        return asn1Octet.valueBytes!;
+      }
+    }
+    return Uint8List.fromList([]);
   }
 
   static String _pemFromSafeBag(ASN1SafeBag element) {
