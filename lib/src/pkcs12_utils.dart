@@ -57,10 +57,9 @@ class Pkcs12Utils {
     String? friendlyName,
     Uint8List? localKeyId,
   }) {
-    Uint8List? pwFormatted = Uint8List.fromList([0]);
+    Uint8List? pwFormatted;
     if (password != null) {
-      pwFormatted =
-          formatPkcs12Password(Uint8List.fromList(password.codeUnits));
+      pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits));
     }
 
     // GENERATE SALT
@@ -191,8 +190,7 @@ class Pkcs12Utils {
     if (password != null) {
       var bytesForHmac = authSafe.encode();
 
-      var pwFormatted =
-          formatPkcs12Password(Uint8List.fromList(password.codeUnits));
+      var pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits));
 
       var generator = PKCS12ParametersGenerator(Digest(digestAlgorithm));
       generator.init(pwFormatted, salt, macIter);
@@ -599,10 +597,9 @@ class Pkcs12Utils {
     Uint8List pkcs12, {
     String? password,
   }) {
-    Uint8List? pwFormatted = Uint8List.fromList([0]);
+    Uint8List? pwFormatted;
     if (password != null) {
-      pwFormatted =
-          formatPkcs12Password(Uint8List.fromList(password.codeUnits));
+      pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits));
     }
 
     var pems = <String>[];
