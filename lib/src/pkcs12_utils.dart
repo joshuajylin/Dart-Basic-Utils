@@ -1,5 +1,3 @@
-import 'dart:convert';
-import 'dart:developer';
 import 'dart:typed_data';
 
 import 'package:basic_utils/basic_utils.dart';
@@ -61,7 +59,7 @@ class Pkcs12Utils {
   }) {
     Uint8List? pwFormatted;
     if (password != null) {
-      pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits));
+      pwFormatted = formatPkcs12Password(Uint8List.fromList(password.codeUnits));
     }
 
     // GENERATE SALT
@@ -192,7 +190,7 @@ class Pkcs12Utils {
     if (password != null) {
       var bytesForHmac = authSafe.encode();
 
-      var pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits));
+      var pwFormatted = formatPkcs12Password(Uint8List.fromList(password.codeUnits));
 
       var generator = PKCS12ParametersGenerator(Digest(digestAlgorithm));
       generator.init(pwFormatted, salt, macIter);
@@ -258,7 +256,7 @@ class Pkcs12Utils {
         return bytes;
       }
     } else {
-      return Uint8List(0);
+      return Uint8List.fromList([0, 0]);
     }
   }
 
@@ -665,7 +663,7 @@ class Pkcs12Utils {
   }) {
     Uint8List? pwFormatted;
     if (password != null) {
-      pwFormatted = password.isEmpty ? Uint8List.fromList([0, 0]) : formatPkcs12Password(Uint8List.fromList(password.codeUnits), isUtf8: isUtf8);
+      pwFormatted = formatPkcs12Password(Uint8List.fromList(password.codeUnits), isUtf8: isUtf8);
     }
 
     var pems = <String>[];
