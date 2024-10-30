@@ -673,7 +673,20 @@ class Pkcs12Utils {
 
     var authSafeContent = pfx.authSafe.content as ASN1OctetString;
     parser = ASN1Parser(authSafeContent.valueBytes);
-    wrapperSeq = parser.nextObject() as ASN1Sequence;
+    if (authSafeContent.tag == ASN1Tags.OCTET_STRING) {
+      wrapperSeq = parser.nextObject() as ASN1Sequence;
+    } else if (authSafeContent.tag == ASN1Tags.OCTET_STRING_CONSTRUCTED) {
+      List<int> content = [];
+      while (parser.hasNext()) {
+        final ans1Object = parser.nextObject();
+        content.addAll(ans1Object.valueBytes!.toList());
+      }
+      parser = ASN1Parser(Uint8List.fromList(content));
+      wrapperSeq = parser.nextObject() as ASN1Sequence;
+    } else {
+      throw Exception('Unexpected format');
+    }
+
     if (wrapperSeq.elements == null || wrapperSeq.elements!.isEmpty) {
       // TODO
     }
@@ -720,11 +733,20 @@ class Pkcs12Utils {
               macIter = _getMacIterFromAlgorithmParameters(
                   contentEncryptionAlgorithm.parameters);
               digestAlgorithm =
-              _getDigestAlgorithmFromEncryptionAlgorithm(encryptionAlgorithm);
+                  _getDigestAlgorithmFromEncryptionAlgorithm(encryptionAlgorithm);
             }
+            var encryptedContent = encryptedContentInfo.encryptedContent!;
+            try {
+              final parser = ASN1Parser(encryptedContent);
+              List<int> content = [];
+              while (parser.hasNext()) {
+                content.addAll(parser.nextObject().valueBytes!.toList());
+              }
+              encryptedContent = Uint8List.fromList(content);
+            } catch (_) {}
             // DECRYPT
             var decryptedContent = _decrypt(
-              encryptedContentInfo.encryptedContent!,
+              encryptedContent,
               encryptionAlgorithm,
               pwFormatted!,
               salt,
@@ -748,9 +770,22 @@ class Pkcs12Utils {
             }
             break;
           case '1.2.840.113549.1.7.1': // data (PKCS #7)
-            var safeContents = ASN1SafeContents.fromSequence(
-              ASN1Sequence.fromBytes(contentInfo.content!.valueBytes!),
-            );
+            ASN1Sequence sequence;
+            if (contentInfo.content?.tag == ASN1Tags.OCTET_STRING) {
+              sequence = ASN1Sequence.fromBytes(contentInfo.content!.valueBytes!);
+            } else if (contentInfo.content?.tag == ASN1Tags.OCTET_STRING_CONSTRUCTED) {
+              var parser = ASN1Parser(Uint8List.fromList(contentInfo.content!.valueBytes!));
+              List<int> content = [];
+              while (parser.hasNext()) {
+                final ans1Object = parser.nextObject();
+                content.addAll(ans1Object.valueBytes!.toList());
+              }
+              parser = ASN1Parser(Uint8List.fromList(content));
+              sequence = parser.nextObject() as ASN1Sequence;
+            } else {
+              throw Exception('Unexpected format');
+            }
+            var safeContents = ASN1SafeContents.fromSequence(sequence);
             safeContents.safeBags.forEach((element) {
               var bagValueSeq = element.bagValue as ASN1Sequence;
               switch (element.bagId.objectIdentifierAsString!) {
@@ -770,8 +805,8 @@ class Pkcs12Utils {
                   break;
                 case "1.2.840.113549.1.12.10.1.2": // pkcs-12-pkcs-8ShroudedKeyBag
                   var contentEncryptionAlgorithm =
-                      ASN1AlgorithmIdentifier.fromSequence(
-                          bagValueSeq.elements!.elementAt(0) as ASN1Sequence);
+                  ASN1AlgorithmIdentifier.fromSequence(
+                      bagValueSeq.elements!.elementAt(0) as ASN1Sequence);
                   // GET ALGORITHM
                   var encryptionAlgorithm = _algorithmFromOi(
                       contentEncryptionAlgorithm
@@ -801,8 +836,8 @@ class Pkcs12Utils {
                     macIter = _getMacIterFromAlgorithmParameters(
                         contentEncryptionAlgorithm.parameters);
                     digestAlgorithm =
-                    _getDigestAlgorithmFromEncryptionAlgorithm(
-                        encryptionAlgorithm);
+                        _getDigestAlgorithmFromEncryptionAlgorithm(
+                            encryptionAlgorithm);
                   }
                   // DECRYPT
                   var decryptedContent = _decrypt(
@@ -828,7 +863,7 @@ class Pkcs12Utils {
                 case "1.2.840.113549.1.12.10.1.1": // pkcs-12-keyBag
                   var seq = bagValueSeq.elements!.elementAt(1) as ASN1Sequence;
                   var identifier =
-                      seq.elements!.elementAt(0) as ASN1ObjectIdentifier;
+                  seq.elements!.elementAt(0) as ASN1ObjectIdentifier;
                   switch (identifier.objectIdentifierAsString!) {
                     case "1.2.840.113549.1.1.1": // rsaEncryption
                       pems.insert(
@@ -843,7 +878,6 @@ class Pkcs12Utils {
                   break;
               }
             });
-
             break;
         }
       }
