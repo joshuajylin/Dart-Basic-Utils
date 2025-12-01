@@ -720,10 +720,11 @@ class Pkcs12Utils {
               final pbkdf2Params = ((contentEncryptionAlgorithm.parameters as ASN1Sequence).elements![0] as ASN1Sequence).elements![1];
               salt = _getSaltFromAlgorithmParameters(pbkdf2Params);
               macIter = _getMacIterFromAlgorithmParameters(pbkdf2Params);
+              keyLen = _getEncryptionSchemeKeyLengthFromPBES2Parameters(pbkdf2Params);
               digestAlgorithm = _getDigestAlgorithmFromPBKDF2Parameters(pbkdf2Params);
               encryptionScheme = _getEncryptionSchemeFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
-              keyLen = _getEncryptionSchemeKeyLengthFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
               if (encryptionScheme == 'AES/CBC') {
+                keyLen ??= 32;
                 iv = _getAesCbcIvFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
               }
             } else {
@@ -823,10 +824,11 @@ class Pkcs12Utils {
                     final pbkdf2Params = ((contentEncryptionAlgorithm.parameters as ASN1Sequence).elements![0] as ASN1Sequence).elements![1];
                     salt = _getSaltFromAlgorithmParameters(pbkdf2Params);
                     macIter = _getMacIterFromAlgorithmParameters(pbkdf2Params);
+                    keyLen = _getEncryptionSchemeKeyLengthFromPBES2Parameters(pbkdf2Params);
                     digestAlgorithm = _getDigestAlgorithmFromPBKDF2Parameters(pbkdf2Params);
                     encryptionScheme = _getEncryptionSchemeFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
-                    keyLen = _getEncryptionSchemeKeyLengthFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
                     if (encryptionScheme == 'AES/CBC') {
+                      keyLen ??= 32;
                       iv = _getAesCbcIvFromPBES2Parameters(contentEncryptionAlgorithm.parameters);
                     }
                   } else {
@@ -940,11 +942,20 @@ class Pkcs12Utils {
     return 1;
   }
 
+  static int? _getEncryptionSchemeKeyLengthFromPBES2Parameters(ASN1Object? parameters) {
+    var seq = parameters as ASN1Sequence;
+    if (seq.elements != null && seq.elements!.isNotEmpty && seq.elements!.elementAt(2) is ASN1Integer) {
+      var asn1Int = seq.elements!.elementAt(2) as ASN1Integer;
+      return asn1Int.integer!.toInt();
+    }
+    return null;
+  }
+
   static String _getDigestAlgorithmFromPBKDF2Parameters(ASN1Object? parameters) {
     var algorithm = 'unknown';
     var seq = parameters as ASN1Sequence;
     if (seq.elements != null && seq.elements!.isNotEmpty) {
-      seq = seq.elements!.elementAt(2) as ASN1Sequence;
+      seq = seq.elements!.last as ASN1Sequence;
       if (seq.elements != null && seq.elements!.isNotEmpty) {
         final ans1OID = seq.elements!.elementAt(0) as ASN1ObjectIdentifier;
         switch (ans1OID.objectIdentifierAsString) {
@@ -952,11 +963,11 @@ class Pkcs12Utils {
             algorithm = 'SHA-256/HMAC';
             return algorithm;
           default:
-            algorithm = ans1OID.objectIdentifierAsString ?? 'unknown';
+            throw ArgumentError('unsupported algorithm ANS1 OID: ${ans1OID.objectIdentifierAsString}');
         }
       }
     }
-    throw ArgumentError('unsupported algorithm $algorithm');
+    throw ArgumentError('unexpected format');
   }
 
   static String _getEncryptionSchemeFromPBES2Parameters(ASN1Object? parameters) {
@@ -971,30 +982,11 @@ class Pkcs12Utils {
             algorithm = 'AES/CBC';
             return algorithm;
           default:
-            algorithm = ans1OID.objectIdentifierAsString ?? 'unknown';
+            throw ArgumentError('unsupported algorithm ANS1 OID: ${ans1OID.objectIdentifierAsString}');
         }
       }
     }
-    throw ArgumentError('unsupported algorithm $algorithm');
-  }
-
-  static int _getEncryptionSchemeKeyLengthFromPBES2Parameters(ASN1Object? parameters) {
-    var algorithm = 'unknown';
-    var seq = parameters as ASN1Sequence;
-    if (seq.elements != null && seq.elements!.isNotEmpty) {
-      seq = seq.elements!.elementAt(1) as ASN1Sequence;
-      if (seq.elements != null && seq.elements!.isNotEmpty) {
-        final ans1OID = seq.elements!.elementAt(0) as ASN1ObjectIdentifier;
-        switch (ans1OID.objectIdentifierAsString) {
-          case '2.16.840.1.101.3.4.1.42': // aes256-CBC
-            algorithm = ans1OID.objectIdentifierAsString!;
-            return 32;
-          default:
-            algorithm = ans1OID.objectIdentifierAsString ?? 'unknown';
-        }
-      }
-    }
-    throw ArgumentError('unsupported algorithm $algorithm');
+    throw ArgumentError('unexpected format');
   }
 
   static Uint8List _getAesCbcIvFromPBES2Parameters(ASN1Object? parameters) {
